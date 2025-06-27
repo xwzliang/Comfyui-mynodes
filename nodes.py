@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 
 class ScaleSkeletonsNode:
     @classmethod
@@ -120,3 +120,96 @@ class ScaleSkeletonsNode:
         video_tensor = torch.stack(outputs, dim=0)  # shape: (num_frames, H, W, 4)
         return (video_tensor,)
 
+# Mapping of body parts to keypoint indices
+BODY_PART_INDEXES = {
+    "Head":     (16, 14, 0, 15, 17),
+    "Neck":     (0, 1),
+    "Shoulder": (2, 5),
+    "Torso":    (2, 5, 8, 11),
+    "RArm":     (2, 3),
+    "RForearm": (3, 4),
+    "LArm":     (5, 6),
+    "LForearm": (6, 7),
+    "RThigh":   (8, 9),
+    "RLeg":     (9, 10),
+    "LThigh":   (11, 12),
+    "LLeg":     (12, 13),
+}
+
+class CuteSkeletonNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "poses":           ("POSE_KEYPOINT", {"multiple": True}),
+                "head_scale":      ("FLOAT", {"default": 1.3,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "neck_scale":      ("FLOAT", {"default": 1.0,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "shoulder_scale": ("FLOAT", {"default": 1.0,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "torso_scale":     ("FLOAT", {"default": 1.0,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "rarm_scale":      ("FLOAT", {"default": 0.8,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "rforearm_scale":  ("FLOAT", {"default": 0.8,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "larm_scale":      ("FLOAT", {"default": 0.8,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "lforearm_scale":  ("FLOAT", {"default": 0.8,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "rthigh_scale":    ("FLOAT", {"default": 0.7,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "rleg_scale":      ("FLOAT", {"default": 1.0,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "lthigh_scale":    ("FLOAT", {"default": 0.7,   "min": 0.01, "max": 5.0, "step": 0.01}),
+                "lleg_scale":      ("FLOAT", {"default": 1.0,   "min": 0.01, "max": 5.0, "step": 0.01}),
+            }
+        }
+    RETURN_TYPES = ("POSE_KEYPOINT",)
+    FUNCTION = "make_cute_skeletons"
+    CATEGORY = "Custom/Transform"
+
+    def make_cute_skeletons(
+        self,
+        poses,
+        head_scale, neck_scale, shoulder_scale, torso_scale,
+        rarm_scale, rforearm_scale, larm_scale, lforearm_scale,
+        rthigh_scale, rleg_scale, lthigh_scale, lleg_scale
+    ):
+        outputs = []
+        # Map of scale values by region name
+        scales = {
+            "Head":     head_scale,
+            "Neck":     neck_scale,
+            "Shoulder": shoulder_scale,
+            "Torso":    torso_scale,
+            "RArm":     rarm_scale,
+            "RForearm": rforearm_scale,
+            "LArm":     larm_scale,
+            "LForearm": lforearm_scale,
+            "RThigh":   rthigh_scale,
+            "RLeg":     rleg_scale,
+            "LThigh":   lthigh_scale,
+            "LLeg":     lleg_scale,
+        }
+        for pose in poses:
+            new_pose = {"people": []}
+            # Preserve canvas dims if present
+            if "canvas_width" in pose:
+                new_pose["canvas_width"] = pose["canvas_width"]
+            if "canvas_height" in pose:
+                new_pose["canvas_height"] = pose["canvas_height"]
+
+            # Process each person in the frame
+            for person in pose.get("people", []):
+                flat = person.get("pose_keypoints_2d", [])
+                pts = np.array(flat, dtype=float).reshape(-1, 3)
+                warped = pts.copy()
+
+                # Apply scaling per body part
+                for region, idxs in BODY_PART_INDEXES.items():
+                    scale = scales.get(region, 1.0)
+                    if scale != 1.0:
+                        coords = warped[list(idxs), :2]
+                        center = coords.mean(axis=0)
+                        warped[list(idxs), :2] = center + (coords - center) * scale
+
+                # Flatten back
+                new_flat = warped.flatten().tolist()
+                new_person = {"pose_keypoints_2d": new_flat}
+                # Copy other person-level metadata if needed
+                new_pose["people"].append(new_person)
+
+            outputs.append(new_pose)
+        return (outputs,)
