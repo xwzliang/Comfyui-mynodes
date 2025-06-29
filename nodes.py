@@ -1,6 +1,9 @@
 import numpy as np
 import torch
+import math
 from PIL import Image, ImageDraw
+from ikpy.chain import Chain
+from ikpy.link import OriginLink, URDFLink
 
 class ScaleSkeletonsNode:
     @classmethod
@@ -208,8 +211,116 @@ class CuteSkeletonNode:
                 # Flatten back
                 new_flat = warped.flatten().tolist()
                 new_person = {"pose_keypoints_2d": new_flat}
-                # Copy other person-level metadata if needed
                 new_pose["people"].append(new_person)
 
             outputs.append(new_pose)
+        return (outputs,)
+
+
+class CatPoseRetargetNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "human_poses": ("POSE_KEYPOINT", {"multiple": True}),
+                "cat_pose":    ("POSE_KEYPOINT",),
+            }
+        }
+    RETURN_TYPES = ("POSE_KEYPOINT",)
+    FUNCTION = "retarget_poses"
+    CATEGORY = "Custom/Transform"
+
+    @staticmethod
+    def rotate2d(v, angle):
+        """Rotate 2D vector v by angle radians"""
+        c, s = math.cos(angle), math.sin(angle)
+        return np.array([v[0]*c - v[1]*s, v[0]*s + v[1]*c])
+
+    def retarget_poses(self, human_poses, cat_pose):
+        # Unwrap cat pose
+        cat_dict = cat_pose[0] if isinstance(cat_pose, list) else cat_pose
+        cat_list = cat_dict.get("animals", [[]])[0]
+        cat_kps = np.array(cat_list, dtype=float).reshape(-1, 3)
+
+        # Define human and cat index mappings
+        human_parts = {
+            'front_left':  (5, 6, 7),   # LShoulder, LElbow, LWrist
+            'front_right': (2, 3, 4),   # RShoulder, RElbow, RWrist
+            'hind_left':   (11,12,13),  # LHip, LKnee, LAnkle
+            'hind_right':  (8, 9,10),   # RHip, RKnee, RAnkle
+        }
+        cat_parts = {
+            'front_left':  (5, 6, 7),
+            'front_right': (8, 9,10),
+            'hind_left':   (11,12,13),
+            'hind_right':  (14,15,16),
+        }
+
+        outputs = []
+        for frame_idx, human in enumerate(human_poses):
+            print(f"[DEBUG] Frame {frame_idx}")
+            # extract keypoints
+            h_flat = human.get('people', [{}])[0].get('pose_keypoints_2d', [])
+            human_kps = np.array(h_flat, dtype=float).reshape(-1,3)
+            new_cat = cat_kps.copy()
+
+            # retarget each leg with analytic two-bone IK
+            for leg, (h1,h2,h3) in human_parts.items():
+                cp1,cp2,cp3 = cat_parts[leg]
+                origin = cat_kps[cp1,:2]
+                # human vectors
+                v1 = human_kps[h2,:2] - human_kps[h1,:2]
+                v2 = human_kps[h3,:2] - human_kps[h2,:2]
+                n1 = np.linalg.norm(v1)
+                n2 = np.linalg.norm(v2)
+                if n1<1e-6 or n2<1e-6:
+                    print(f"[DEBUG] {leg} skipped due to zero-length")
+                    continue
+                u1 = v1/n1
+                u2 = v2/n2
+                # compute bend angle
+                dot = np.clip(np.dot(u1,u2), -1.0, 1.0)
+                angle = math.acos(dot)
+                cross = u1[0]*u2[1] - u1[1]*u2[0]
+                sign = 1.0 if cross>=0 else -1.0
+                # cat bone lengths
+                L1 = np.linalg.norm(cat_kps[cp2,:2] - origin)
+                L2 = np.linalg.norm(cat_kps[cp3,:2] - cat_kps[cp2,:2])
+                # new positions
+                elbow = origin + u1 * L1
+                paw   = elbow + self.rotate2d(u1, sign*angle) * L2
+                print(f"[DEBUG] {leg} elbow={elbow}, paw={paw}")
+                new_cat[cp2,:2] = elbow
+                new_cat[cp3,:2] = paw
+
+            # retarget head
+            h_nose = human_kps[0,:2]
+            h_neck = human_kps[1,:2]
+            v_head = h_nose - h_neck
+            n_head = np.linalg.norm(v_head)
+            if n_head>1e-6:
+                dir_h = v_head/n_head
+                idx_nose = 2  # 0-based
+                idx_neck = 3
+                Lh = np.linalg.norm(cat_kps[idx_nose,:2]-cat_kps[idx_neck,:2])
+                new_cat[idx_nose,:2] = cat_kps[idx_neck,:2] + dir_h*Lh
+                print(f"[DEBUG] head moved to {new_cat[idx_nose,:2]}")
+
+            # retarget torso
+            h_mid = (human_kps[11,:2]+human_kps[12,:2])/2
+            v_torso = h_mid - h_neck
+            n_t = np.linalg.norm(v_torso)
+            if n_t>1e-6:
+                dir_t = v_torso/n_t
+                idx_tail = 4
+                Lr = np.linalg.norm(cat_kps[idx_tail,:2]-cat_kps[idx_neck,:2])
+                new_cat[idx_tail,:2] = cat_kps[idx_neck,:2] + dir_t*Lr
+                print(f"[DEBUG] torso moved to {new_cat[idx_tail,:2]}")
+
+            out = {'animals':[new_cat.tolist()]}
+            for k in('canvas_width','canvas_height'):
+                if k in cat_dict:
+                    out[k]=cat_dict[k]
+            outputs.append(out)
+
         return (outputs,)

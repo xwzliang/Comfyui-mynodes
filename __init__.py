@@ -2,7 +2,7 @@ import os,sys
 now_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(now_dir)
 WEB_DIRECTORY = "./web"
-from .nodes import ScaleSkeletonsNode, CuteSkeletonNode
+from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode
 from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses
 
 # Set the web directory, any .js file in that directory will be loaded by the frontend as a frontend extension
@@ -13,6 +13,7 @@ from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses
 NODE_CLASS_MAPPINGS = {
     "ScaleSkeletonsNode": ScaleSkeletonsNode,
     "CuteSkeletonNode": CuteSkeletonNode,
+    "CatPoseRetargetNode": CatPoseRetargetNode,
     "RenderMultiplePeoplePoses": RenderMultiplePeoplePoses,
     "RenderMultipleAnimalPoses": RenderMultipleAnimalPoses,
 }
@@ -21,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ScaleSkeletonsNode": "Scale Skeletons Node",
     "CuteSkeletonNode": "Cute Skeleton Node",
+    "CatPoseRetargetNode": "Cat Pose Retarget Node",
     "RenderMultiplePeoplePoses": "Render Multiple People Poses",
     "RenderMultipleAnimalPoses": "Render Multiple Animal Poses",
 }
