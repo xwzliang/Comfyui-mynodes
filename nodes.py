@@ -266,9 +266,15 @@ class CatPoseRetargetNode:
         outputs = []
         for frame_idx, human in enumerate(human_poses):
             print(f"[DEBUG] Frame {frame_idx}")
-            # extract keypoints
+            # Move cat hips to follow human hips
             h_flat = human.get('people', [{}])[0].get('pose_keypoints_2d', [])
             human_kps = np.array(h_flat, dtype=float).reshape(-1,3)
+            # Update base cat_kps for hips before copying
+            cat_kps[11,:2] = human_kps[11,:2]  # left hip
+            cat_kps[14,:2] = human_kps[8,:2]   # right hip
+            print(f"[DEBUG] Updated cat left hip idx11 -> {cat_kps[11,:2]}")
+            print(f"[DEBUG] Updated cat right hip idx14 -> {cat_kps[14,:2]}")
+            # Create working copy for this frame
             new_cat = cat_kps.copy()
 
             # retarget each leg with analytic two-bone IK
