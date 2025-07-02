@@ -216,7 +216,6 @@ class CuteSkeletonNode:
             outputs.append(new_pose)
         return (outputs,)
 
-
 class CatPoseRetargetNode:
     @classmethod
     def INPUT_TYPES(cls):
