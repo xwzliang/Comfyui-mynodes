@@ -265,15 +265,34 @@ class CatPoseRetargetNode:
 
         outputs = []
         for frame_idx, human in enumerate(human_poses):
-            print(f"[DEBUG] Frame {frame_idx}")
-            # Move cat hips to follow human hips
             h_flat = human.get('people', [{}])[0].get('pose_keypoints_2d', [])
             human_kps = np.array(h_flat, dtype=float).reshape(-1,3)
-            # Update base cat_kps for hips before copying
-            cat_kps[11,:2] = human_kps[11,:2]  # left hip
-            cat_kps[14,:2] = human_kps[8,:2]   # right hip
-            print(f"[DEBUG] Updated cat left hip idx11 -> {cat_kps[11,:2]}")
-            print(f"[DEBUG] Updated cat right hip idx14 -> {cat_kps[14,:2]}")
+            print(f"[DEBUG] Frame {frame_idx}")
+            xs = human_kps[:,0]
+            ys = human_kps[:,1]
+            hxmin, hxmax = xs.min(), xs.max()
+            hymin, hymax = ys.min(), ys.max()
+            hwidth = hxmax - hxmin if hxmax > hxmin else 1.0
+            hheight = hymax - hymin if hymax > hymin else 1.0
+            # Compute cat bounding box
+            cat_xs = cat_kps[:,0]
+            cat_ys = cat_kps[:,1]
+            cxmin, cxmax = cat_xs.min(), cat_xs.max()
+            cymin, cymax = cat_ys.min(), cat_ys.max()
+            cwidth = cxmax - cxmin if cxmax > cxmin else 1.0
+            cheight = cymax - cymin if cymax > cymin else 1.0
+            # Map human hip positions normalized into cat bbox space
+            # human left hip idx11, cat idx11
+            hL = human_kps[11,:2]
+            nx = (hL[0] - hxmin) / hwidth
+            ny = (hL[1] - hymin) / hheight
+            cat_kps[11, :2] = np.array([cxmin + nx * cwidth, cymin + ny * cheight])
+            # human right hip idx8, cat idx14
+            hR = human_kps[8,:2]
+            nx = (hR[0] - hxmin) / hwidth
+            ny = (hR[1] - hymin) / hheight
+            cat_kps[14, :2] = np.array([cxmin + nx * cwidth, cymin + ny * cheight])
+            print(f"[DEBUG] Normalized human hips to cat bbox: left={cat_kps[11,:2]}, right={cat_kps[14,:2]}")
             # Create working copy for this frame
             new_cat = cat_kps.copy()
 
