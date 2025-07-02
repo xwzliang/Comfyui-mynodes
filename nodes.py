@@ -236,19 +236,6 @@ class CatPoseRetargetNode:
         return np.array([v[0]*c - v[1]*s, v[0]*s + v[1]*c])
 
     def retarget_poses(self, human_poses, cat_pose):
-        # Unwrap cat pose
-        cat_dict = cat_pose[0] if isinstance(cat_pose, list) else cat_pose
-        cat_list = cat_dict.get("animals", [[]])[0]
-        cat_kps = np.array(cat_list, dtype=float).reshape(-1, 3)
-        # Modify input cat_pose: set 5th keypoint root of tail (index 4)
-        # as midpoint of 12th (11) and 15th (14) left and right hips
-        idx5 = 4  # 0-based
-        print(cat_kps[idx5])
-        idx12 = 11
-        idx15 = 14
-        midpoint = (cat_kps[idx12, :2] + cat_kps[idx15, :2]) / 2
-        cat_kps[idx5, :2] = midpoint
-       
         # Define human and cat index mappings
         human_parts = {
             'front_left':  (5, 6, 7),   # LShoulder, LElbow, LWrist
@@ -263,104 +250,112 @@ class CatPoseRetargetNode:
             'hind_right':  (14,15,16),
         }
 
+        # Unwrap cat pose
+        cat_dict = cat_pose[0] if isinstance(cat_pose, list) else cat_pose
+        cat_list = cat_dict.get("animals", [[]])[0]
+        cat_kps = np.array(cat_list, dtype=float).reshape(-1, 3)
+        # Modify input cat_pose: set 5th keypoint root of tail (index 4)
+        # as midpoint of 12th (11) and 15th (14) left and right hips
+        idx5 = 4  # 0-based
+        print(cat_kps[idx5])
+        idx12 = 11
+        idx15 = 14
+        midpoint = (cat_kps[idx12, :2] + cat_kps[idx15, :2]) / 2
+        cat_kps[idx5, :2] = midpoint
+        # Store original leg bone lengths to preserve
+        orig_leg_lengths = {}
+        # upper leg
+        scale_factor_1 = 1.5
+        # lower leg
+        scale_factor_2 = 2
+        for leg, (cp1, cp2, cp3) in cat_parts.items():
+            if "hind" in leg:
+                # Only resize hind leg parts
+                L1 = np.linalg.norm(cat_kps[cp2,:2] - cat_kps[cp1,:2]) * scale_factor_1
+                L2 = np.linalg.norm(cat_kps[cp3,:2] - cat_kps[cp2,:2]) * scale_factor_2
+            else:
+                L1 = np.linalg.norm(cat_kps[cp2,:2] - cat_kps[cp1,:2])
+                L2 = np.linalg.norm(cat_kps[cp3,:2] - cat_kps[cp2,:2])
+            orig_leg_lengths[leg] = (L1, L2)
+        
         outputs = []
         for frame_idx, human in enumerate(human_poses):
+            print(f"[DEBUG] Frame {frame_idx}")
             h_flat = human.get('people', [{}])[0].get('pose_keypoints_2d', [])
             human_kps = np.array(h_flat, dtype=float).reshape(-1,3)
-            print(f"[DEBUG] Frame {frame_idx}")
-            xs = human_kps[:,0]
-            ys = human_kps[:,1]
-            hxmin, hxmax = xs.min(), xs.max()
-            hymin, hymax = ys.min(), ys.max()
-            hwidth = hxmax - hxmin if hxmax > hxmin else 1.0
-            hheight = hymax - hymin if hymax > hymin else 1.0
-            # Compute cat bounding box
-            cat_xs = cat_kps[:,0]
-            cat_ys = cat_kps[:,1]
-            cxmin, cxmax = cat_xs.min(), cat_xs.max()
-            cymin, cymax = cat_ys.min(), cat_ys.max()
-            cwidth = cxmax - cxmin if cxmax > cxmin else 1.0
-            cheight = cymax - cymin if cymax > cymin else 1.0
-            # Map human hip positions normalized into cat bbox space
-            # human left hip idx11, cat idx11
+            # Map hips proportionally
+            xs = human_kps[:,0]; ys = human_kps[:,1]
+            hxmin, hxmax = xs.min(), xs.max(); hymin, hymax = ys.min(), ys.max()
+            hwidth = hxmax-hxmin if hxmax>hxmin else 1.0
+            hheight= hymax-hymin if hymax>hymin else 1.0
+            cat_xs = cat_kps[:,0]; cat_ys = cat_kps[:,1]
+            cxmin, cxmax = cat_xs.min(), cat_xs.max(); cymin, cymax = cat_ys.min(), cat_ys.max()
+            cwidth = cxmax-cxmin if cxmax>cxmin else 1.0
+            cheight= cymax-cymin if cymax>cymin else 1.0
+            # left hip
             hL = human_kps[11,:2]
-            nx = (hL[0] - hxmin) / hwidth
-            ny = (hL[1] - hymin) / hheight
-            cat_kps[11, :2] = np.array([cxmin + nx * cwidth, cymin + ny * cheight])
-            # human right hip idx8, cat idx14
+            nx = (hL[0]-hxmin)/hwidth; ny = (hL[1]-hymin)/hheight
+            cat_kps[11,:2] = np.array([cxmin+nx*cwidth, cymin+ny*cheight])
+            # right hip
             hR = human_kps[8,:2]
-            nx = (hR[0] - hxmin) / hwidth
-            ny = (hR[1] - hymin) / hheight
-            cat_kps[14, :2] = np.array([cxmin + nx * cwidth, cymin + ny * cheight])
-            print(f"[DEBUG] Normalized human hips to cat bbox: left={cat_kps[11,:2]}, right={cat_kps[14,:2]}")
+            nx = (hR[0]-hxmin)/hwidth; ny = (hR[1]-hymin)/hheight
+            cat_kps[14,:2] = np.array([cxmin+nx*cwidth, cymin+ny*cheight])
+            # move cat neck normalized to human neck
+            h_neck = human_kps[1,:2]
+            nx = (h_neck[0]-hxmin)/hwidth; ny = (h_neck[1]-hymin)/hheight
+            cat_kps[3,:2] = np.array([cxmin+nx*cwidth, cymin+ny*cheight])
+            print(f"[DEBUG] Normalized cat neck idx3: {cat_kps[3,:2]}")
+            # move cat eyes normalized to human eyes
+            # human left eye idx14, right eye idx15
+            h_leye = human_kps[14,:2]
+            nx = (h_leye[0]-hxmin)/hwidth; ny = (h_leye[1]-hymin)/hheight
+            cat_kps[0,:2] = np.array([cxmin+nx*cwidth, cymin+ny*cheight])
+            h_reye = human_kps[15,:2]
+            nx = (h_reye[0]-hxmin)/hwidth; ny = (h_reye[1]-hymin)/hheight
+            cat_kps[1,:2] = np.array([cxmin+nx*cwidth, cymin+ny*cheight])
             # Create working copy for this frame
             new_cat = cat_kps.copy()
 
-            # retarget each leg with analytic two-bone IK
+            # retarget legs
             for leg, (h1,h2,h3) in human_parts.items():
                 cp1,cp2,cp3 = cat_parts[leg]
-                origin = cat_kps[cp1,:2]
-                # human vectors
-                v1 = human_kps[h2,:2] - human_kps[h1,:2]
-                v2 = human_kps[h3,:2] - human_kps[h2,:2]
-                n1 = np.linalg.norm(v1)
-                n2 = np.linalg.norm(v2)
+                origin = new_cat[cp1,:2]
+                target = human_kps[h3,:2]
+                L1,L2 = orig_leg_lengths[leg]
+                # compute human bone dirs
+                v1 = human_kps[h2,:2]-human_kps[h1,:2]; n1=np.linalg.norm(v1)
+                v2 = human_kps[h3,:2]-human_kps[h2,:2]; n2=np.linalg.norm(v2)
                 if n1<1e-6 or n2<1e-6:
-                    print(f"[DEBUG] {leg} skipped due to zero-length")
+                    print(f"[DEBUG] {leg} skipped due zero-length")
                     continue
-                u1 = v1/n1
-                u2 = v2/n2
-                # compute bend angle
-                dot = np.clip(np.dot(u1,u2), -1.0, 1.0)
-                angle = math.acos(dot)
-                cross = u1[0]*u2[1] - u1[1]*u2[0]
-                sign = 1.0 if cross>=0 else -1.0
-                # cat bone lengths
-                L1 = np.linalg.norm(cat_kps[cp2,:2] - origin)
-                L2 = np.linalg.norm(cat_kps[cp3,:2] - cat_kps[cp2,:2])
-                # new positions
-                elbow = origin + u1 * L1
-                paw   = elbow + self.rotate2d(u1, sign*angle) * L2
+                u1, u2 = v1/n1, v2/n2
+                dot = np.clip(np.dot(u1,u2), -1.0,1.0); angle=math.acos(dot)
+                sign = 1.0 if (u1[0]*u2[1]-u1[1]*u2[0])>=0 else -1.0
+                elbow = origin + u1*L1
+                paw = elbow + self.rotate2d(u1, sign*angle)*L2
                 print(f"[DEBUG] {leg} elbow={elbow}, paw={paw}")
-                new_cat[cp2,:2] = elbow
-                new_cat[cp3,:2] = paw
+                new_cat[cp2,:2]=elbow; new_cat[cp3,:2]=paw
 
-            # retarget head
-            h_nose = human_kps[0,:2]
-            h_neck = human_kps[1,:2]
-            v_head = h_nose - h_neck
-            n_head = np.linalg.norm(v_head)
+            # head
+            h_nose=human_kps[0,:2]; h_neck=human_kps[1,:2]; v_head=h_nose-h_neck; n_head=np.linalg.norm(v_head)
             if n_head>1e-6:
-                dir_h = v_head/n_head
-                idx_nose = 2  # 0-based
-                idx_neck = 3
-                Lh = np.linalg.norm(cat_kps[idx_nose,:2]-cat_kps[idx_neck,:2])
-                new_cat[idx_nose,:2] = cat_kps[idx_neck,:2] + dir_h*Lh
-                print(f"[DEBUG] head moved to {new_cat[idx_nose,:2]}")
-
-            # retarget torso
-            h_mid = (human_kps[11,:2]+human_kps[12,:2])/2
-            v_torso = h_mid - h_neck
-            n_t = np.linalg.norm(v_torso)
+                dir_h=v_head/n_head; idx_nose=2; idx_neck=3; Lh=np.linalg.norm(cat_kps[idx_nose,:2]-cat_kps[idx_neck,:2])
+                new_cat[idx_nose,:2]=new_cat[idx_neck,:2]+dir_h*Lh; print(f"[DEBUG] head moved to {new_cat[idx_nose,:2]}")
+            # torso
+            h_mid=(human_kps[11,:2]+human_kps[12,:2])/2; v_torso=h_mid-h_neck; n_t=np.linalg.norm(v_torso)
             if n_t>1e-6:
-                dir_t = v_torso/n_t
-                idx_tail = 4
-                Lr = np.linalg.norm(cat_kps[idx_tail,:2]-cat_kps[idx_neck,:2])
-                new_cat[idx_tail,:2] = cat_kps[idx_neck,:2] + dir_t*Lr
-                print(f"[DEBUG] torso moved to {new_cat[idx_tail,:2]}")
+                dir_t=v_torso/n_t; idx_tail=4; Lr=np.linalg.norm(cat_kps[idx_tail,:2]-cat_kps[idx_neck,:2])
+                new_cat[idx_tail,:2]=new_cat[idx_neck,:2]+dir_t*Lr; print(f"[DEBUG] torso moved to {new_cat[idx_tail,:2]}")
             
-            # Modify input cat_pose: set 5th keypoint root of tail (index 4)
-            # as midpoint of 12th (11) and 15th (14) left and right hips
-            idx5 = 4
-            idx12 = 11
-            idx15 = 14
-            midpoint = (new_cat[idx12,:2] + new_cat[idx15,:2]) / 2
-            new_cat[idx5,:2] = midpoint
+            # adjust 5th keypoint mid of 12&15
+            idx5=4; idx12=11; idx15=14
+            mp=(new_cat[idx12,:2]+new_cat[idx15,:2])/2
+            new_cat[idx5,:2]=mp; new_cat[idx5,2]=(new_cat[idx12,2]+new_cat[idx15,2])/2
+            print(f"[DEBUG] 5th keypoint adjusted to {new_cat[idx5,:2]}")
 
-            out = {'animals':[new_cat.tolist()]}
+            out={'animals':[new_cat.tolist()]}
             for k in('canvas_width','canvas_height'):
-                if k in cat_dict:
-                    out[k]=cat_dict[k]
+                if k in cat_dict: out[k]=cat_dict[k]
             outputs.append(out)
 
         return (outputs,)
