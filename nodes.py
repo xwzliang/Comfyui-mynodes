@@ -240,7 +240,15 @@ class CatPoseRetargetNode:
         cat_dict = cat_pose[0] if isinstance(cat_pose, list) else cat_pose
         cat_list = cat_dict.get("animals", [[]])[0]
         cat_kps = np.array(cat_list, dtype=float).reshape(-1, 3)
-
+        # Modify input cat_pose: set 5th keypoint root of tail (index 4)
+        # as midpoint of 12th (11) and 15th (14) left and right hips
+        idx5 = 4  # 0-based
+        print(cat_kps[idx5])
+        idx12 = 11
+        idx15 = 14
+        midpoint = (cat_kps[idx12, :2] + cat_kps[idx15, :2]) / 2
+        cat_kps[idx5, :2] = midpoint
+       
         # Define human and cat index mappings
         human_parts = {
             'front_left':  (5, 6, 7),   # LShoulder, LElbow, LWrist
@@ -315,6 +323,14 @@ class CatPoseRetargetNode:
                 Lr = np.linalg.norm(cat_kps[idx_tail,:2]-cat_kps[idx_neck,:2])
                 new_cat[idx_tail,:2] = cat_kps[idx_neck,:2] + dir_t*Lr
                 print(f"[DEBUG] torso moved to {new_cat[idx_tail,:2]}")
+            
+            # Modify input cat_pose: set 5th keypoint root of tail (index 4)
+            # as midpoint of 12th (11) and 15th (14) left and right hips
+            idx5 = 4
+            idx12 = 11
+            idx15 = 14
+            midpoint = (new_cat[idx12,:2] + new_cat[idx15,:2]) / 2
+            new_cat[idx5,:2] = midpoint
 
             out = {'animals':[new_cat.tolist()]}
             for k in('canvas_width','canvas_height'):
