@@ -101,9 +101,11 @@ class ScaleSkeletonsNode:
 
             # non-uniform scale for animals
             # new non‐uniform code: stretch to exactly the mask’s box
-            new_w, new_h = ref_w, ref_h
+            # because the skeleton won't start from top of head, so the ref_h should be scaled
+            height_scale_factor = 0.8
+            new_w, new_h = ref_w, int(ref_h * height_scale_factor)
             resized = pil.resize((new_w, new_h), Image.BILINEAR)
-            paste_x, paste_y = x0, y0
+            paste_x, paste_y = x0, y0 + int((1 - height_scale_factor) * ref_h)
 
             # print(f"Frame {idx}: resizing → {new_w}×{new_h}, paste at ({paste_x},{paste_y})")
 
