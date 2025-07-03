@@ -128,7 +128,7 @@ class ScaleSkeletonsNode:
 # Mapping of body parts to keypoint indices
 BODY_PART_INDEXES = {
     "Head":     (16, 14, 0, 15, 17),
-    "Neck":     (0, 1),
+    "Neck":     (1, 0),
     "Shoulder": (2, 5),
     "Torso":    (2, 5, 8, 11),
     "RArm":     (2, 3),
@@ -205,7 +205,117 @@ class CuteSkeletonNode:
                 # Apply scaling per body part
                 for region, idxs in BODY_PART_INDEXES.items():
                     scale = scales.get(region, 1.0)
-                    if scale != 1.0:
+                    if scale == 1.0:
+                        continue  # no change needed
+
+                    # Head: scale around keypoint index 0
+                    if region == "Head":
+                        anchor = warped[0, :2]  # use keypoint index 0
+                        coords = warped[list(idxs), :2]
+                        warped[list(idxs), :2] = anchor + (coords - anchor) * scale
+                    # Neck: scale neck bone, then translate all head points by that delta
+                    elif region == "Neck":
+                        anchor_idx, target_idx = idxs
+                        anchor_pos = warped[anchor_idx, :2]
+                        orig_target = warped[target_idx, :2]
+                        direction = orig_target - anchor_pos
+                        new_target = anchor_pos + direction * scale
+                        delta = new_target - orig_target
+                        warped[target_idx, :2] = new_target
+
+                        # Move head region points by same delta
+                        head_idxs = list(BODY_PART_INDEXES["Head"])
+                        # don't move index 0 since it's already moved
+                        head_idxs.remove(0)
+                        warped[head_idxs, :2] = warped[head_idxs, :2] + delta
+                    # RArm -> RForearm
+                    elif region == "RArm":
+                        a_i, t_i = idxs
+                        anchor_pos = warped[a_i, :2]
+                        orig_target = warped[t_i, :2].copy()
+                        direction = orig_target - anchor_pos
+                        new_target = anchor_pos + direction * scale
+                        delta = new_target - orig_target
+                        warped[t_i, :2] = new_target
+                        child_ids = list(BODY_PART_INDEXES["RForearm"])
+                        for idx in child_ids:
+                            if idx not in idxs:
+                                warped[idx, :2] += delta
+
+                    # LArm -> LForearm
+                    elif region == "LArm":
+                        a_i, t_i = idxs
+                        anchor_pos = warped[a_i, :2]
+                        orig_target = warped[t_i, :2].copy()
+                        direction = orig_target - anchor_pos
+                        new_target = anchor_pos + direction * scale
+                        delta = new_target - orig_target
+                        warped[t_i, :2] = new_target
+                        child_ids = list(BODY_PART_INDEXES["LForearm"])
+                        for idx in child_ids:
+                            if idx not in idxs:
+                                warped[idx, :2] += delta
+
+                    # RThigh -> RLeg
+                    elif region == "RThigh":
+                        a_i, t_i = idxs
+                        anchor_pos = warped[a_i, :2]
+                        orig_target = warped[t_i, :2].copy()
+                        direction = orig_target - anchor_pos
+                        new_target = anchor_pos + direction * scale
+                        delta = new_target - orig_target
+                        warped[t_i, :2] = new_target
+                        child_ids = list(BODY_PART_INDEXES["RLeg"])
+                        for idx in child_ids:
+                            if idx not in idxs:
+                                warped[idx, :2] += delta
+
+                    # LThigh -> LLeg
+                    elif region == "LThigh":
+                        a_i, t_i = idxs
+                        anchor_pos = warped[a_i, :2]
+                        orig_target = warped[t_i, :2].copy()
+                        direction = orig_target - anchor_pos
+                        new_target = anchor_pos + direction * scale
+                        delta = new_target - orig_target
+                        warped[t_i, :2] = new_target
+                        child_ids = list(BODY_PART_INDEXES["LLeg"])
+                        for idx in child_ids:
+                            if idx not in idxs:
+                                warped[idx, :2] += delta
+
+                    # SHOULDER: midpoint center, shift limbs separately
+                    elif region == "Shoulder":
+                        a_i, b_i = idxs
+                        old_a = warped[a_i, :2].copy()
+                        old_b = warped[b_i, :2].copy()
+                        center = (old_a + old_b) / 2
+                        rel_a = old_a - center
+                        rel_b = old_b - center
+                        new_a = center + rel_a * scale
+                        new_b = center + rel_b * scale
+                        warped[a_i, :2] = new_a
+                        warped[b_i, :2] = new_b
+                        delta_a = new_a - old_a
+                        delta_b = new_b - old_b
+                        for r in ["RArm","RForearm"]:
+                            for idx in BODY_PART_INDEXES[r]:
+                                if idx not in idxs:
+                                    warped[idx, :2] += delta_a
+                        for r in ["LArm","LForearm"]:
+                            for idx in BODY_PART_INDEXES[r]:
+                                if idx not in idxs:
+                                    warped[idx, :2] += delta_b
+
+                    # two-point bones: anchor at first, move second
+                    elif len(idxs) == 2:
+                        a_i, t_i = idxs
+                        anchor_pos = warped[a_i, :2]
+                        direction = warped[t_i, :2] - anchor_pos
+                        warped[t_i, :2] = anchor_pos + direction * scale
+
+                    # multi-point: midpoint-scaling
+                    else:
                         coords = warped[list(idxs), :2]
                         center = coords.mean(axis=0)
                         warped[list(idxs), :2] = center + (coords - center) * scale
