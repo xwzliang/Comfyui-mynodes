@@ -5,6 +5,140 @@ from PIL import Image, ImageDraw
 from ikpy.chain import Chain
 from ikpy.link import OriginLink, URDFLink
 
+def to_pil(img):
+    if isinstance(img, torch.Tensor):
+        arr = img.detach().cpu().numpy()
+        if arr.ndim == 4 and arr.shape[0] == 1:
+            arr = arr[0]
+        if arr.ndim == 3 and arr.shape[0] in (1,3,4):
+            arr = np.moveaxis(arr, 0, -1)
+        if arr.ndim == 3 and arr.shape[2] == 1:
+            arr = arr[...,0]
+        if arr.dtype.kind == 'f':
+            arr = np.clip(arr * 255, 0, 255).astype(np.uint8)
+        elif arr.dtype != np.uint8:
+            arr = arr.astype(np.uint8)
+        if arr.ndim == 2:
+            mode = 'L'
+        elif arr.ndim == 3 and arr.shape[2] == 3:
+            mode = 'RGB'
+        elif arr.ndim == 3 and arr.shape[2] == 4:
+            mode = 'RGBA'
+        else:
+            raise ValueError(f"Unsupported image shape: {arr.shape}")
+        return Image.fromarray(arr, mode)
+    elif isinstance(img, Image.Image):
+        return img
+    else:
+        raise TypeError(f"Unsupported image type: {type(img)}")
+
+
+def to_tensor(arr):
+    img_arr = arr.astype(np.float32) / 255.0
+    if img_arr.ndim == 2:
+        img_arr = img_arr[..., None]
+    tensor = torch.from_numpy(img_arr)
+    if tensor.ndim == 3:
+        # HWC -> CHW
+        tensor = tensor.permute(2, 0, 1)
+    return tensor
+
+
+class ScaleImagesToMaskNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE", {"multiple": True}),
+                "mask": ("MASK", {})
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "scale_images"
+    CATEGORY = "Custom/Transform"
+
+    def scale_images(self, images, mask):
+        # 1) Mask → PIL → grayscale → bbox
+        mask_pil = to_pil(mask).convert('L')
+        mask_arr = np.array(mask_pil)
+        ys, xs = np.nonzero(mask_arr > 0)
+        if ys.size == 0:
+            # empty mask: return originals
+            return (torch.stack([to_tensor(np.array(to_pil(img))) for img in images], dim=0),)
+        y0, y1 = ys.min(), ys.max()
+        x0, x1 = xs.min(), xs.max()
+        ref_w, ref_h = x1 - x0, y1 - y0
+
+        # 2) Convert inputs to PIL
+        pil_images = [to_pil(img) for img in images]
+
+        # 3) Find non-black bbox in first image
+        arr0 = np.array(pil_images[0])
+        non_black = np.any(arr0[..., :3] > 0, axis=-1)
+        ys0, xs0 = np.nonzero(non_black)
+        if ys0.size == 0:
+            return (torch.stack([to_tensor(np.array(pil)) for pil in pil_images]),)
+        sy0, sy1 = ys0.min(), ys0.max()
+        sx0, sx1 = xs0.min(), xs0.max()
+        sk_w, sk_h = sx1 - sx0, sy1 - sy0
+
+        # 4) Compute non-uniform scales
+        scale_x = ref_w / sk_w
+        scale_y = ref_h / sk_h
+        # Compute offsets to align top-left of bbox
+        offset_x = x0 - sx0 * scale_x
+        offset_y = y0 - sy0 * scale_y
+
+        # 5) Scale & translate each image
+        transformed = []
+        for pil in pil_images:
+            W, H = pil.size
+            new_w = int(W * scale_x)
+            new_h = int(H * scale_y)
+            resized = pil.resize((new_w, new_h), resample=Image.BICUBIC)
+            canvas = Image.new(pil.mode, (W, H), 0)
+            canvas.paste(resized, (int(offset_x), int(offset_y)))
+            arr = np.array(canvas).astype(np.float32) / 255.0
+            if arr.ndim == 2:
+                arr = arr[..., None]
+            transformed.append(arr)
+
+        # 6) Stack into N×H×W×C tensor
+        batch = np.stack(transformed, axis=0)
+        tensor = torch.from_numpy(batch)
+        return (tensor,)
+
+class ScaleHeightAroundBottomMidNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"images": ("IMAGE", {"multiple": True}), "height_scale": ("FLOAT", {})}}
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "scale_height"
+
+    def scale_height(self, images, height_scale):
+        pil_images = [to_pil(img) for img in images]
+        # compute bbox from first image
+        arr0 = np.array(pil_images[0])
+        mask = np.any(arr0[..., :3] > 0, axis=-1)
+        ys, xs = np.nonzero(mask)
+        if ys.size == 0:
+            return (torch.stack([to_tensor(np.array(p)) for p in pil_images], dim=0),)
+        x0, x1 = xs.min(), xs.max(); y0, y1 = ys.min(), ys.max()
+        px = (x0 + x1) / 2; py = y1
+        # apply affine per image
+        transformed = []
+        for pil in pil_images:
+            W, H = pil.size
+            a, b, c = 1, 0, 0
+            d, e, f = 0, 1/height_scale, py - py*(1/height_scale)
+            img_t = pil.transform((W, H), Image.AFFINE, (a,b,c,d,e,f), resample=Image.BICUBIC)
+            arr = np.array(img_t)
+            transformed.append(arr)
+        batch = np.stack(transformed, axis=0)
+        return (torch.from_numpy(batch.astype(np.float32)/255.0),)
+
+
 class ScaleSkeletonsNode:
     @classmethod
     def INPUT_TYPES(cls):
