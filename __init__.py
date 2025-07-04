@@ -2,8 +2,8 @@ import os,sys
 now_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(now_dir)
 WEB_DIRECTORY = "./web"
-from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode
-from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses, DrawAnimalKeypoints, PoseJSONWrapper
+from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode, ScaleImagesToMaskNode, ScaleHeightAroundBottomMidNode
+from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses, DrawAnimalKeypoints, PoseJSONWrapper, RenderMultiplePeoplePosesForAnimal
 
 # Set the web directory, any .js file in that directory will be loaded by the frontend as a frontend extension
 # WEB_DIRECTORY = "./somejs"
@@ -18,6 +18,9 @@ NODE_CLASS_MAPPINGS = {
     "RenderMultipleAnimalPoses": RenderMultipleAnimalPoses,
     "DrawAnimalKeypoints": DrawAnimalKeypoints,
     "PoseJSONWrapper": PoseJSONWrapper,
+    "ScaleImagesToMaskNode": ScaleImagesToMaskNode,
+    "ScaleHeightAroundBottomMidNode": ScaleHeightAroundBottomMidNode,
+    "RenderMultiplePeoplePosesForAnimal": RenderMultiplePeoplePosesForAnimal,
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
@@ -29,4 +32,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RenderMultipleAnimalPoses": "Render Multiple Animal Poses",
     "DrawAnimalKeypoints": "Draw animal pose keypoints",
     "PoseJSONWrapper": "Pose Json data to Keypoints",
+    "ScaleImagesToMaskNode": "Scale Images to Mask Bbox",
+    "ScaleHeightAroundBottomMidNode": "Scale Height Around Bottom Mid Node",
+    "RenderMultiplePeoplePosesForAnimal": "Render Multiple People Poses for Animal",
 }

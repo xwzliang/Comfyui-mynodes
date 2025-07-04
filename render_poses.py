@@ -1,8 +1,10 @@
+import math
 import torch
 import json
 import cv2
 import numpy as np
 from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.dwpose import decode_json_as_poses, draw_poses, draw_animalposes
+from custom_nodes.comfyui_controlnet_aux.src.custom_controlnet_aux.dwpose import util
 # from custom_nodes.comfyui_controlnet_aux.node_wrappers.pose_keypoint_postprocess import numpy2torch
 
 class RenderMultiplePeoplePoses:
@@ -193,3 +195,110 @@ class PoseJSONWrapper:
         }]
 
         return (result,)
+
+
+def draw_bodypose_as_animal(canvas: np.ndarray, keypoints, xinsr_stick_scaling: bool = False) -> np.ndarray:
+    if not util.is_normalized(keypoints):
+        H, W = 1.0, 1.0
+    else:
+        H, W, _ = canvas.shape
+
+    CH, CW, _ = canvas.shape
+    stickwidth = 4
+
+    # Ref: https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0
+    max_side = max(CW, CH)
+    if xinsr_stick_scaling:
+        stick_scale = 1 if max_side < 500 else min(2 + (max_side // 1000), 7)
+    else:
+        stick_scale = 1
+
+    limbSeq = [
+        [2, 3], [2, 6], [3, 4], [4, 5], 
+        [6, 7], [7, 8], [2, 9], [9, 10], 
+        [10, 11], [2, 12], [12, 13], [13, 14], 
+        [2, 1], [1, 15], [15, 17], [1, 16], 
+        [16, 18],
+    ]
+
+    colors = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0], \
+              [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255], \
+              [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
+
+    for (k1_index, k2_index), color in zip(limbSeq, colors):
+        keypoint1 = keypoints[k1_index - 1]
+        keypoint2 = keypoints[k2_index - 1]
+
+        if keypoint1 is None or keypoint2 is None:
+            continue
+
+        Y = np.array([keypoint1.x, keypoint2.x]) * float(W)
+        X = np.array([keypoint1.y, keypoint2.y]) * float(H)
+        mX = np.mean(X)
+        mY = np.mean(Y)
+        length = ((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2) ** 0.5
+        angle = math.degrees(math.atan2(X[0] - X[1], Y[0] - Y[1]))
+        polygon = cv2.ellipse2Poly((int(mY), int(mX)), (int(length / 2), stickwidth*stick_scale), int(angle), 0, 360, 1)
+        cv2.fillConvexPoly(canvas, polygon, [int(float(c) * 0.6) for c in color])
+
+    for keypoint, color in zip(keypoints, colors):
+        if keypoint is None:
+            continue
+
+        x, y = keypoint.x, keypoint.y
+        x = int(x * W)
+        y = int(y * H)
+        cv2.circle(canvas, (int(x), int(y)), 4, color, thickness=-1)
+
+    return canvas
+
+def draw_poses_as_animal(poses, H, W, draw_body=True, draw_hand=True, draw_face=True, xinsr_stick_scaling=False):
+    canvas = np.zeros(shape=(H, W, 3), dtype=np.uint8)
+
+    for pose in poses:
+        if draw_body:
+            canvas = draw_bodypose_as_animal(canvas, pose.body.keypoints, xinsr_stick_scaling)
+
+        if draw_hand:
+            canvas = util.draw_handpose(canvas, pose.left_hand)
+            canvas = util.draw_handpose(canvas, pose.right_hand)
+
+        if draw_face:
+            canvas = util.draw_facepose(canvas, pose.face)
+
+    return canvas
+
+
+class RenderMultiplePeoplePosesForAnimal:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "kps": ("POSE_KEYPOINT",),
+                "render_body": ("BOOLEAN", {"default": True}),
+                "render_hand": ("BOOLEAN", {"default": True}),
+                "render_face": ("BOOLEAN", {"default": True}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "render"
+    CATEGORY = "ControlNet Preprocessors/Pose Keypoint Postprocess"
+
+    def render(self, kps, render_body, render_hand, render_face):
+        outputs = []
+        for k in kps:
+            poses, _, height, width = decode_json_as_poses(k)
+            np_image = draw_poses_as_animal(
+                poses,
+                height,
+                width,
+                render_body,
+                render_hand,
+                render_face,
+            )
+            out_t = torch.from_numpy(np_image.astype(np.float32) / 255.0)
+            outputs.append(out_t)
+        # instead of returning the raw list, stack into one tensor:
+        stacked_outputs = torch.stack(outputs, dim=0)  # shape: (num_frames, H, W, 4)
+        return (stacked_outputs,)
