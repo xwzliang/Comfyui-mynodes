@@ -198,6 +198,7 @@ class PoseJSONWrapper:
 
 
 def draw_bodypose_as_animal(canvas: np.ndarray, keypoints, xinsr_stick_scaling: bool = False) -> np.ndarray:
+    # Determine normalization
     if not util.is_normalized(keypoints):
         H, W = 1.0, 1.0
     else:
@@ -206,49 +207,88 @@ def draw_bodypose_as_animal(canvas: np.ndarray, keypoints, xinsr_stick_scaling: 
     CH, CW, _ = canvas.shape
     stickwidth = 4
 
-    # Ref: https://huggingface.co/xinsir/controlnet-openpose-sdxl-1.0
+    # stick scaling (unchanged)
     max_side = max(CW, CH)
     if xinsr_stick_scaling:
         stick_scale = 1 if max_side < 500 else min(2 + (max_side // 1000), 7)
     else:
         stick_scale = 1
 
+    # original limb sequence, minus [2,9] and [2,12]
     limbSeq = [
-        [2, 3], [2, 6], [3, 4], [4, 5], 
-        [6, 7], [7, 8], [2, 9], [9, 10], 
-        [10, 11], [2, 12], [12, 13], [13, 14], 
-        [2, 1], [1, 15], [15, 17], [1, 16], 
+        [2, 3], [2, 6], [3, 4], [4, 5],
+        [6, 7], [7, 8],           # <-- no [2,9] or [2,12] here
+        [9, 10], [10, 11], 
+        [12, 13], [13, 14],
+        [2, 1], [1, 15], [15, 17], [1, 16],
         [16, 18],
     ]
 
-    colors = [[255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0], [170, 255, 0], [85, 255, 0], [0, 255, 0], \
-              [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255], [0, 0, 255], [85, 0, 255], \
-              [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
+    colors = [
+        [255, 0, 0], [255, 85, 0], [255, 170, 0], [255, 255, 0],
+        [170, 255, 0], [85, 255, 0], [0, 255, 0], [0, 255, 85],
+        [0, 255, 170], [0, 255, 255], [0, 170, 255], [0, 85, 255],
+        [0, 0, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255],
+        [255, 0, 170], [255, 0, 85],
+    ]
 
+    # draw all the “normal” limbs
     for (k1_index, k2_index), color in zip(limbSeq, colors):
-        keypoint1 = keypoints[k1_index - 1]
-        keypoint2 = keypoints[k2_index - 1]
-
-        if keypoint1 is None or keypoint2 is None:
+        kp1 = keypoints[k1_index - 1]
+        kp2 = keypoints[k2_index - 1]
+        if kp1 is None or kp2 is None:
             continue
 
-        Y = np.array([keypoint1.x, keypoint2.x]) * float(W)
-        X = np.array([keypoint1.y, keypoint2.y]) * float(H)
+        # as before: build an ellipse-shaped stick
+        Y = np.array([kp1.x, kp2.x]) * float(W)
+        X = np.array([kp1.y, kp2.y]) * float(H)
         mX = np.mean(X)
         mY = np.mean(Y)
         length = ((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2) ** 0.5
         angle = math.degrees(math.atan2(X[0] - X[1], Y[0] - Y[1]))
-        polygon = cv2.ellipse2Poly((int(mY), int(mX)), (int(length / 2), stickwidth*stick_scale), int(angle), 0, 360, 1)
-        cv2.fillConvexPoly(canvas, polygon, [int(float(c) * 0.6) for c in color])
+        polygon = cv2.ellipse2Poly(
+            (int(mY), int(mX)),
+            (int(length / 2), stickwidth * stick_scale),
+            int(angle),
+            0,
+            360,
+            1
+        )
+        cv2.fillConvexPoly(
+            canvas,
+            polygon,
+            [int(float(c) * 0.6) for c in color]
+        )
 
+    # --- now the custom “pelvis” connection ---
+    # indices (1-based): 2 → 9 and 2 → 12 were removed above
+    kp2  = keypoints[1]   # point 2
+    kp9  = keypoints[8]   # point 9
+    kp12 = keypoints[11]  # point 12
+    if kp2 is not None and kp9 is not None and kp12 is not None:
+        # pixel coords for circle-drawing convention
+        p2  = (int(kp2.x * W),  int(kp2.y * H))
+        p9  = (int(kp9.x * W),  int(kp9.y * H))
+        p12 = (int(kp12.x * W), int(kp12.y * H))
+
+        # midpoint in pixel space
+        pm = ((p9[0] + p12[0]) // 2, (p9[1] + p12[1]) // 2)
+        line_thickness = stickwidth * stick_scale
+        # choose a color (here, reuse the "green" for hips, colors[6])
+        line_color = colors[6]
+
+        # draw straight lines
+        cv2.line(canvas, p2, pm,   line_color, thickness=line_thickness)
+        cv2.line(canvas, pm, p9,   line_color, thickness=line_thickness)
+        cv2.line(canvas, pm, p12,  line_color, thickness=line_thickness)
+
+    # finally draw the joint circles (unchanged)
     for keypoint, color in zip(keypoints, colors):
         if keypoint is None:
             continue
-
-        x, y = keypoint.x, keypoint.y
-        x = int(x * W)
-        y = int(y * H)
-        cv2.circle(canvas, (int(x), int(y)), 4, color, thickness=-1)
+        x = int(keypoint.x * W)
+        y = int(keypoint.y * H)
+        cv2.circle(canvas, (x, y), 4, color, thickness=-1)
 
     return canvas
 
