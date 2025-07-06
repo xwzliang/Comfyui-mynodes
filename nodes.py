@@ -110,13 +110,15 @@ class ScaleImagesToMaskNode:
             cy = (sy0_i + sy1_i) / 2.0
             # Compute top-left offset
             offset_x = int(cx - new_w/2)
-            offset_y = int(cy - new_h/2)
+            offset_y = int(y1_m - new_h)
             if debug: print(f"Image {idx}: region ({sx0_i},{sy0_i})→({sx1_i},{sy1_i}), new size={new_w}×{new_h}, offset=({offset_x},{offset_y})")
 
             # Crop, resize, paste
             region = pil.crop((sx0_i, sy0_i, sx1_i, sy1_i))
             region_scaled = region.resize((new_w, new_h), resample=Image.BICUBIC)
-            canvas = pil.copy()
+            # canvas = pil.copy()
+            W, H = pil.size
+            canvas = Image.new(pil.mode, (W, H), 0)
             # Use mask channel if available
             mask_rgba = region_scaled.split()[-1] if region_scaled.mode in ('RGBA','LA') else None
             canvas.paste(region_scaled, (offset_x, offset_y), mask=mask_rgba)
