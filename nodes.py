@@ -49,8 +49,9 @@ class ScaleImagesToMaskNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "images": ("IMAGE", {"multiple": True}),
-                "mask": ("MASK", {})
+                "images":      ("IMAGE", {"multiple": True}),
+                "mask":        ("MASK", {}),
+                "scale_width": ("BOOLEAN", {}),
             }
         }
 
@@ -58,56 +59,81 @@ class ScaleImagesToMaskNode:
     FUNCTION = "scale_images"
     CATEGORY = "Custom/Transform"
 
-    def scale_images(self, images, mask):
-        # 1) Mask → PIL → grayscale → bbox
+    def scale_images(self, images, mask, scale_width, debug=False):
+        # --- Compute global scale from first image and mask ---
         mask_pil = to_pil(mask).convert('L')
         mask_arr = np.array(mask_pil)
-        ys, xs = np.nonzero(mask_arr > 0)
-        if ys.size == 0:
-            # empty mask: return originals
+        ys_m, xs_m = np.nonzero(mask_arr > 0)
+        if ys_m.size == 0:
+            if debug: print("Mask empty, returning originals.")
             return (torch.stack([to_tensor(np.array(to_pil(img))) for img in images], dim=0),)
-        y0, y1 = ys.min(), ys.max()
-        x0, x1 = xs.min(), xs.max()
-        ref_w, ref_h = x1 - x0, y1 - y0
+        y0_m, y1_m = ys_m.min(), ys_m.max()
+        x0_m, x1_m = xs_m.min(), xs_m.max()
+        ref_w, ref_h = x1_m - x0_m, y1_m - y0_m
+        if debug: print(f"Mask bbox: ({x0_m},{y0_m})→({x1_m},{y1_m}), size={ref_w}×{ref_h}")
 
-        # 2) Convert inputs to PIL
-        pil_images = [to_pil(img) for img in images]
-
-        # 3) Find non-black bbox in first image
-        arr0 = np.array(pil_images[0])
-        non_black = np.any(arr0[..., :3] > 0, axis=-1)
-        ys0, xs0 = np.nonzero(non_black)
+        # First image crop bbox
+        pil0 = to_pil(images[0])
+        arr0 = np.array(pil0)
+        mask0 = np.any(arr0[..., :3] > 0, axis=-1)
+        ys0, xs0 = np.nonzero(mask0)
         if ys0.size == 0:
-            return (torch.stack([to_tensor(np.array(pil)) for pil in pil_images]),)
+            if debug: print("First image non-black empty, returning originals.")
+            return (torch.stack([to_tensor(np.array(pil0)) for pil0 in images]),)
         sy0, sy1 = ys0.min(), ys0.max()
         sx0, sx1 = xs0.min(), xs0.max()
         sk_w, sk_h = sx1 - sx0, sy1 - sy0
-
-        # 4) Compute non-uniform scales
-        scale_x = ref_w / sk_w
         scale_y = ref_h / sk_h
-        # Compute offsets to align top-left of bbox
-        offset_x = x0 - sx0 * scale_x
-        offset_y = y0 - sy0 * scale_y
+        scale_x = ref_w / sk_w if scale_width else scale_y
+        if debug: print(f"Global scales from first image: scale_x={scale_x:.3f}, scale_y={scale_y:.3f}")
 
-        # 5) Scale & translate each image
-        transformed = []
-        for pil in pil_images:
-            W, H = pil.size
-            new_w = int(W * scale_x)
-            new_h = int(H * scale_y)
-            resized = pil.resize((new_w, new_h), resample=Image.BICUBIC)
-            canvas = Image.new(pil.mode, (W, H), 0)
-            canvas.paste(resized, (int(offset_x), int(offset_y)))
-            arr = np.array(canvas).astype(np.float32) / 255.0
-            if arr.ndim == 2:
-                arr = arr[..., None]
-            transformed.append(arr)
+        outputs = []
+        # Process each image individually
+        for idx, img in enumerate(images):
+            pil = to_pil(img)
+            arr = np.array(pil)
+            mask_i = np.any(arr[..., :3] > 0, axis=-1)
+            ys_i, xs_i = np.nonzero(mask_i)
+            if ys_i.size == 0:
+                if debug: print(f"Image {idx}: no non-black region, returning original.")
+                outputs.append(np.array(pil).astype(np.float32)/255.0)
+                continue
+            sy0_i, sy1_i = ys_i.min(), ys_i.max()
+            sx0_i, sx1_i = xs_i.min(), xs_i.max()
+            region_w, region_h = sx1_i - sx0_i, sy1_i - sy0_i
 
-        # 6) Stack into N×H×W×C tensor
-        batch = np.stack(transformed, axis=0)
-        tensor = torch.from_numpy(batch)
-        return (tensor,)
+            # New size
+            new_w = int(region_w * scale_x)
+            new_h = int(region_h * scale_y)
+            # Center of original region
+            cx = (sx0_i + sx1_i) / 2.0
+            cy = (sy0_i + sy1_i) / 2.0
+            # Compute top-left offset
+            offset_x = int(cx - new_w/2)
+            offset_y = int(cy - new_h/2)
+            if debug: print(f"Image {idx}: region ({sx0_i},{sy0_i})→({sx1_i},{sy1_i}), new size={new_w}×{new_h}, offset=({offset_x},{offset_y})")
+
+            # Crop, resize, paste
+            region = pil.crop((sx0_i, sy0_i, sx1_i, sy1_i))
+            region_scaled = region.resize((new_w, new_h), resample=Image.BICUBIC)
+            canvas = pil.copy()
+            # Use mask channel if available
+            mask_rgba = region_scaled.split()[-1] if region_scaled.mode in ('RGBA','LA') else None
+            canvas.paste(region_scaled, (offset_x, offset_y), mask=mask_rgba)
+
+            if debug:
+                draw = ImageDraw.Draw(canvas)
+                draw.rectangle([x0_m, y0_m, x1_m, y1_m], outline='red')
+                draw.rectangle([sx0_i, sy0_i, sx1_i, sy1_i], outline='blue')
+
+            out_arr = np.array(canvas).astype(np.float32)/255.0
+            outputs.append(out_arr)
+
+        batch = np.stack(outputs, axis=0)
+        if debug: print(f"Final batch shape: {batch.shape}")
+        return (torch.from_numpy(batch),)
+
+
 
 class ScaleHeightAroundBottomMidNode:
     @classmethod
@@ -116,27 +142,65 @@ class ScaleHeightAroundBottomMidNode:
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "scale_height"
 
-    def scale_height(self, images, height_scale):
-        pil_images = [to_pil(img) for img in images]
-        # compute bbox from first image
-        arr0 = np.array(pil_images[0])
-        mask = np.any(arr0[..., :3] > 0, axis=-1)
-        ys, xs = np.nonzero(mask)
+    def scale_images(self, images, mask, scale_width):
+        # 1) Mask bbox
+        mask_pil = to_pil(mask).convert('L')
+        mask_arr = np.array(mask_pil)
+        ys, xs = np.nonzero(mask_arr > 0)
         if ys.size == 0:
-            return (torch.stack([to_tensor(np.array(p)) for p in pil_images], dim=0),)
-        x0, x1 = xs.min(), xs.max(); y0, y1 = ys.min(), ys.max()
-        px = (x0 + x1) / 2; py = y1
-        # apply affine per image
+            originals = []
+            for img in images:
+                pil = to_pil(img)
+                arr = np.array(pil).astype(np.float32) / 255.0
+                if arr.ndim == 2:
+                    arr = arr[..., None]
+                originals.append(arr)
+            batch = np.stack(originals, axis=0)
+            return (torch.from_numpy(batch),)
+        y0, y1 = ys.min(), ys.max()
+        x0, x1 = xs.min(), xs.max()
+        ref_w, ref_h = x1 - x0, y1 - y0
+
+        # 2) Convert to PIL
+        pil_images = [to_pil(img) for img in images]
+
+        # 3) First image non-black bbox
+        arr0 = np.array(pil_images[0])
+        non_black = np.any(arr0[..., :3] > 0, axis=-1)
+        ys0, xs0 = np.nonzero(non_black)
+        if ys0.size == 0:
+            originals = []
+            for pil in pil_images:
+                arr = np.array(pil).astype(np.float32) / 255.0
+                if arr.ndim == 2: arr = arr[..., None]
+                originals.append(arr)
+            batch = np.stack(originals, axis=0)
+            return (torch.from_numpy(batch),)
+        sy0, sy1 = ys0.min(), ys0.max()
+        sx0, sx1 = xs0.min(), xs0.max()
+        sk_w, sk_h = sx1 - sx0, sy1 - sy0
+
+        # 4) Compute scales
+        scale_y = ref_h / sk_h
+        scale_x = (ref_w / sk_w) if scale_width else scale_y
+
+        # 5) Inverse affine parameters for bottom-left alignment
+        a = 1.0 / scale_x
+        e = 1.0 / scale_y
+        c = sx0 - x0 / scale_x  # align left of bbox
+        f = sy1 - y1 / scale_y  # align bottom of bbox
+
+        # 6) Apply affine transform
         transformed = []
         for pil in pil_images:
             W, H = pil.size
-            a, b, c = 1, 0, 0
-            d, e, f = 0, 1/height_scale, py - py*(1/height_scale)
-            img_t = pil.transform((W, H), Image.AFFINE, (a,b,c,d,e,f), resample=Image.BICUBIC)
-            arr = np.array(img_t)
+            img_t = pil.transform((W, H), Image.AFFINE, (a, 0.0, c, 0.0, e, f), resample=Image.BICUBIC)
+            arr = np.array(img_t).astype(np.float32) / 255.0
+            if arr.ndim == 2: arr = arr[..., None]
             transformed.append(arr)
+
         batch = np.stack(transformed, axis=0)
-        return (torch.from_numpy(batch.astype(np.float32)/255.0),)
+        return (torch.from_numpy(batch),)
 
 
 class ScaleSkeletonsNode:
