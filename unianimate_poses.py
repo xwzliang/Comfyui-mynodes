@@ -2,6 +2,8 @@ import os
 import json
 import importlib.util
 import sys
+import math
+import cv2
 from pathlib import Path
 import torch
 import numpy as np
@@ -652,8 +654,8 @@ def pose_extract(
         # Define ankle indices for foot baseline anchoring (0-based)
         RIGHT_ANKLE = 11 - 1
         LEFT_ANKLE  = 14 - 1
-        # Head cluster indices (0-based): nose, eyes, ears
-        HEAD_IDS = [id - 1 for id in [1, 15, 16, 17, 18]]
+        # Head cluster indices (0-based): nose, right eye, right ear, left eye, left ear
+        HEAD_IDS = [id - 1 for id in [1, 15, 17, 16, 18]]
 
         # 4) Retarget each frame using its own ratios
         results_vis = []
@@ -696,9 +698,60 @@ def pose_extract(
             new_feet  = max(out[RIGHT_ANKLE,1], out[LEFT_ANKLE,1])
             out[:,1] += (orig_feet - new_feet)
 
-            # head block scaling about neck
-            for hid in HEAD_IDS:
-                out[hid] = neck_src + head_scale * (out[hid] - neck_src)
+            # apply original per-bone head adjustments (neck=0-based index ROOT)
+            # head segment bones indices are (parent→child):
+            # (ROOT=neck idx), head base idx is 0 (nose), then landmarks 14,15,16,17
+            # head14: between 14 (left ear) and 0 (nose)
+            # define nose index
+            nose = 0
+            # head14: segment between left ear (14) and nose (0)
+            l_head14_ref = np.linalg.norm(ref_cand[14] - ref_cand[nose])
+            l_head14_0   = np.linalg.norm(out[14]      - out[nose]) + 1e-8
+            head14_ratio = l_head14_ref  / l_head14_0
+            offset14     = (out[nose]    - out[14])     * (1. - head14_ratio)
+            out[14] += offset14
+            out[16] += offset14  # also adjust left eye
+
+            # head15: segment between right eye (15) and nose (0)
+            l_head15_ref = np.linalg.norm(ref_cand[15] - ref_cand[nose])
+            l_head15_0   = np.linalg.norm(out[15]      - out[nose]) + 1e-8
+            head15_ratio = l_head15_ref  / l_head15_0
+            offset15     = (out[nose]    - out[15])     * (1. - head15_ratio)
+            out[15] += offset15
+            out[17] += offset15  # adjust right ear
+
+            # head16: between left eye (16) and left ear (14)
+            l_head16_ref = np.linalg.norm(ref_cand[16] - ref_cand[14])
+            l_head16_0   = np.linalg.norm(out[16]      - out[14]) + 1e-8
+            head16_ratio = l_head16_ref  / l_head16_0
+            offset16     = (out[14]      - out[16])     * (1. - head16_ratio)
+            out[16] += offset16
+
+            # head17: between right ear (17) and right eye (15)
+            l_head17_ref = np.linalg.norm(ref_cand[17] - ref_cand[15])
+            l_head17_0   = np.linalg.norm(out[17]      - out[15]) + 1e-8
+            head17_ratio = l_head17_ref  / l_head17_0
+            offset17     = (out[15]      - out[17])     * (1. - head17_ratio)
+            out[17] += offset17
+
+            # shoulder->ear adjustments (original code also draws edges [3,17] and [6,18])
+            # right shoulder (3) to right ear (17)
+            rs_parent = 3 - 1  # 0-based index 2
+            rs_child  = 17 - 1 # 0-based index 16
+            l_rs_ref = np.linalg.norm(ref_cand[rs_child] - ref_cand[rs_parent])
+            l_rs_0   = np.linalg.norm(out[rs_child] - out[rs_parent]) + 1e-8
+            rs_ratio = l_rs_ref / l_rs_0
+            offset_rs = (out[rs_parent] - out[rs_child]) * (1. - rs_ratio)
+            out[rs_child] += offset_rs
+
+            # left shoulder (6) to left ear (18)
+            ls_parent = 6 - 1  # 0-based index 5
+            ls_child  = 18 - 1 # 0-based index 17
+            l_ls_ref = np.linalg.norm(ref_cand[ls_child] - ref_cand[ls_parent])
+            l_ls_0   = np.linalg.norm(out[ls_child] - out[ls_parent]) + 1e-8
+            ls_ratio = l_ls_ref / l_ls_0
+            offset_ls = (out[ls_parent] - out[ls_child]) * (1. - ls_ratio)
+            out[ls_child] += offset_ls
 
             # assemble frame
             new_frame = deepcopy(frame)
@@ -925,3 +978,123 @@ class MyWanVideoUniAnimateDWPoseDetector:
         # save_all_poses_as_json(results_vis_copy, pose_ref, "/workspace/poses.json", "/workspace/pose_ref.json")
 
         return (poses, reference_pose, )
+    
+def alpha_blend_color(color, alpha):
+    """blend color according to point conf
+    """
+    return [int(c * alpha) for c in color]
+
+def draw_body_and_foot(canvas, candidate, subset, score, stick_width=4, draw_body=True, draw_feet=True, body_keypoint_size=4, draw_head=True):
+    H, W, C = canvas.shape
+    candidate = np.array(candidate)
+    subset = np.array(subset)
+    limbSeq_and_colors = []
+
+    if draw_body:
+        limbSeq_and_colors = [
+            ([2, 3], [255, 0, 0]),   # Neck to Right Shoulder
+            ([2, 6], [255, 85, 0]),  # Neck to Left Shoulder
+            ([3, 4], [255, 170, 0]), # Right Shoulder to Right Elbow
+            ([4, 5], [255, 255, 0]), # Right Elbow to Right Wrist
+            ([6, 7], [170, 255, 0]), # Left Shoulder to Left Elbow
+            ([7, 8], [85, 255, 0]),  # Left Elbow to Left Wrist
+            ([2, 9], [0, 255, 0]),   # Neck to Right Hip
+            ([9, 10], [0, 255, 85]), # Right Hip to Right Knee
+            ([10, 11], [0, 255, 170]), # Right Knee to Right Ankle
+            ([2, 12], [0, 255, 255]), # Neck to Left Hip
+            ([12, 13], [0, 170, 255]), # Left Hip to Left Knee
+            ([13, 14], [0, 85, 255]), # Left Knee to Left Ankle
+        ]
+    else:
+        limbSeq_and_colors = [
+            ([2, 3], [0, 0, 0]),   # Neck to Right Shoulder
+            ([2, 6], [0, 0, 0]),  # Neck to Left Shoulder
+            ([3, 4], [0, 0, 0]), # Right Shoulder to Right Elbow
+            ([4, 5], [0, 0, 0]), # Right Elbow to Right Wrist
+            ([6, 7], [0, 0, 0]), # Left Shoulder to Left Elbow
+            ([7, 8], [0, 0, 0]),  # Left Elbow to Left Wrist
+            ([2, 9], [0, 0, 0]),   # Neck to Right Hip
+            ([9, 10], [0, 0, 0]), # Right Hip to Right Knee
+            ([10, 11], [0, 0, 0]), # Right Knee to Right Ankle
+            ([2, 12], [0, 0, 0]), # Neck to Left Hip
+            ([12, 13], [0, 0, 0]), # Left Hip to Left Knee
+            ([13, 14], [0, 0, 0]), # Left Knee to Left Ankle
+        ]
+
+    # Conditionally add head-related elements
+    if draw_head:
+        head_elements = [
+            ([2, 1], [0, 0, 255]), # Neck to Nose
+            ([1, 15], [0, 0, 255]), # Nose to Right Eye
+            ([15, 17], [85, 0, 255]), # Right Eye to Right Ear
+            ([1, 16], [170, 0, 255]), # Nose to Left Eye
+            ([16, 18], [255, 0, 255]), # Left Eye to Left Ear
+            ([3, 17], [255, 0, 170]), # Right Shoulder to Right Ear
+            ([6, 18], [255, 0, 85])   # Left Shoulder to Left Ear
+        ]
+    else:
+        head_elements = [
+            ([2, 1], [0, 0, 0]),   # Neck to Nose
+            ([1, 15], [0, 0, 0]), # Nose to Right Eye
+            ([15, 17], [0, 0, 0]), # Right Eye to Right Ear
+            ([1, 16], [0, 0, 0]), # Nose to Left Eye
+            ([16, 18], [0, 0, 0]), # Left Eye to Left Ear
+            ([3, 17], [0, 0, 0]), # Right Shoulder to Right Ear
+            ([6, 18], [0, 0, 0])   # Left Shoulder to Left Ear
+        ]
+    if draw_feet:
+        limbSeq_and_colors += [
+            ([14, 19], [170, 255, 255]), # Left Ankle to Right Foot
+            ([11, 20], [255, 255, 0]), # Right Ankle to Left Foot
+        ]
+
+    # Append head elements based on the condition
+    limbSeq_and_colors += head_elements
+
+    for limb_info in limbSeq_and_colors[:17]:
+        limbSeq, color = limb_info
+        for n in range(len(subset)):
+            index = subset[n][np.array(limbSeq) - 1]
+            conf = score[n][np.array(limbSeq) - 1]
+            if conf[0] < 0.3 or conf[1] < 0.3:
+                continue
+            Y = candidate[index.astype(int), 0] * float(W)
+            X = candidate[index.astype(int), 1] * float(H)
+            mX = np.mean(X)
+            mY = np.mean(Y)
+            length = np.sqrt((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2)
+            angle = math.degrees(math.atan2(X[0] - X[1], Y[0] - Y[1]))
+            polygon = cv2.ellipse2Poly((int(mY), int(mX)), (int(length / 2), stick_width), int(angle), 0, 360, 1)
+            cv2.fillConvexPoly(canvas, polygon, alpha_blend_color(color, conf[0] * conf[1]))
+
+    canvas = (canvas * 0.6).astype(np.uint8)
+
+    for limb_info in limbSeq_and_colors[:18]:
+        limbSeq, color = limb_info
+        for i in limbSeq:
+            for n in range(len(subset)):
+                idx = int(subset[n][i - 1])
+                if idx < 0:
+                    continue
+                x_norm, y_norm = candidate[idx][:2]
+                conf = score[n][i - 1]
+                x = int(x_norm * W)
+                y = int(y_norm * H)
+
+                # draw the dot
+                cv2.circle(canvas, (x, y), 4, alpha_blend_color(color, conf), thickness=-1)
+
+                # draw the index next to it
+                cv2.putText(
+                    canvas,
+                    str(i),                  # the 1-based keypoint index
+                    (x + 5, y - 5),          # offset a little so it’s legible
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                    fontScale=0.5,
+                    color=(255, 255, 255),   # white text
+                    thickness=1,
+                    lineType=cv2.LINE_AA
+                )
+
+
+    return canvas
