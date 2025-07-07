@@ -625,9 +625,9 @@ def pose_extract(
             [3, 17], # Right Shoulder to Right Ear
             [6, 18],   # Left Shoulder to Left Ear
         ]
-        # edges = limbSeq + headSeq
+        edges = limbSeq + headSeq
         # Don't stretch the head, only the body
-        edges = limbSeq
+        # edges = limbSeq
         PARENT = { b-1: a-1 for a,b in edges }
         ROOT = 2-1  # neck
 
@@ -696,23 +696,9 @@ def pose_extract(
             new_feet  = max(out[RIGHT_ANKLE,1], out[LEFT_ANKLE,1])
             out[:,1] += (orig_feet - new_feet)
 
-            # restore head block
+            # head block scaling about neck
             for hid in HEAD_IDS:
-                out[hid] = src_cand[hid]
-
-            # compute current torso length after retarget
-            hip_mid_out = 0.5 * (out[8] + out[11])
-            torso_len_out = np.linalg.norm(hip_mid_out - out[ROOT]) + 1e-8
-            desired_head_len = head_to_torso_ref * torso_len_out
-            head_origin = out[ROOT]
-            for hid in HEAD_IDS:
-                # direction from neck based on original source pose
-                rel_src = src_cand[hid] - src_cand[ROOT]
-                norm = np.linalg.norm(rel_src)
-                if norm < 1e-6:
-                    continue
-                dir = rel_src / norm
-                out[hid] = head_origin + dir * desired_head_len
+                out[hid] = neck_src + head_scale * (out[hid] - neck_src)
 
             # assemble frame
             new_frame = deepcopy(frame)
