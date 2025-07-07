@@ -4,6 +4,7 @@ sys.path.append(now_dir)
 WEB_DIRECTORY = "./web"
 from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode, ScaleImagesToMaskNode, ScaleHeightAroundBottomMidNode
 from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses, DrawAnimalKeypoints, PoseJSONWrapper, RenderMultiplePeoplePosesForAnimal
+from .unianimate_poses import MyWanVideoUniAnimateDWPoseDetector
 
 # Set the web directory, any .js file in that directory will be loaded by the frontend as a frontend extension
 # WEB_DIRECTORY = "./somejs"
@@ -21,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
     "ScaleImagesToMaskNode": ScaleImagesToMaskNode,
     "ScaleHeightAroundBottomMidNode": ScaleHeightAroundBottomMidNode,
     "RenderMultiplePeoplePosesForAnimal": RenderMultiplePeoplePosesForAnimal,
+    "MyWanVideoUniAnimateDWPoseDetector": MyWanVideoUniAnimateDWPoseDetector,
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
@@ -35,4 +37,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ScaleImagesToMaskNode": "Scale Images to Mask Bbox",
     "ScaleHeightAroundBottomMidNode": "Scale Height Around Bottom Mid Node",
     "RenderMultiplePeoplePosesForAnimal": "Render Multiple People Poses for Animal",
+    "MyWanVideoUniAnimateDWPoseDetector": "My Custom WanVideo UniAnimate DW Pose Detector",
 }
