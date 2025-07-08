@@ -625,9 +625,9 @@ def pose_extract(
             [3, 17], # Right Shoulder to Right Ear
             [6, 18],   # Left Shoulder to Left Ear
         ]
-        edges = limbSeq + headSeq
+        # edges = limbSeq + headSeq
         # Don't stretch the head, only the body
-        # edges = limbSeq
+        edges = limbSeq
         PARENT = { b-1: a-1 for a,b in edges }
         ROOT = 2-1  # neck
 
@@ -696,15 +696,16 @@ def pose_extract(
             new_feet  = max(out[RIGHT_ANKLE,1], out[LEFT_ANKLE,1])
             out[:,1] += (orig_feet - new_feet)
 
-            # head block scaling about neck
+            neck_off = out[ROOT] - neck_src
             for hid in HEAD_IDS:
-                out[hid] = neck_src + head_scale * (out[hid] - neck_src)
+                # restore head block
+                out[hid] = src_cand[hid]
+                out[hid] += neck_off
 
             # assemble frame
             new_frame = deepcopy(frame)
             new_frame['bodies']['candidate'] = out
             # translate faces by neck offset
-            neck_off = out[ROOT] - neck_src
             new_frame['faces'] += neck_off[np.newaxis, np.newaxis, :]
             # translate hands
             rw_off = out[RIGHT_WRIST] - src_cand[RIGHT_WRIST]
