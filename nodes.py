@@ -135,7 +135,96 @@ class ScaleImagesToMaskNode:
         if debug: print(f"Final batch shape: {batch.shape}")
         return (torch.from_numpy(batch),)
 
+class ScaleImagesToRefImageNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images":      ("IMAGE", {"multiple": True}),
+                "ref_image":   ("IMAGE", {}),
+                "scale_width": ("BOOLEAN", {}),
+            }
+        }
 
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "scale_images"
+    CATEGORY = "Custom/Transform"
+
+    def scale_images(self, images, ref_image, scale_width, debug=False):
+        # --- Compute global scale from first image and mask ---
+        mask_pil = to_pil(ref_image).convert('L')
+        mask_arr = np.array(mask_pil)
+        ys_m, xs_m = np.nonzero(mask_arr > 0)
+        if ys_m.size == 0:
+            if debug: print("Mask empty, returning originals.")
+            return (torch.stack([to_tensor(np.array(to_pil(img))) for img in images], dim=0),)
+        y0_m, y1_m = ys_m.min(), ys_m.max()
+        x0_m, x1_m = xs_m.min(), xs_m.max()
+        ref_w, ref_h = x1_m - x0_m, y1_m - y0_m
+        if debug: print(f"Mask bbox: ({x0_m},{y0_m})→({x1_m},{y1_m}), size={ref_w}×{ref_h}")
+
+        # First image crop bbox
+        pil0 = to_pil(images[0])
+        arr0 = np.array(pil0)
+        mask0 = np.any(arr0[..., :3] > 0, axis=-1)
+        ys0, xs0 = np.nonzero(mask0)
+        if ys0.size == 0:
+            if debug: print("First image non-black empty, returning originals.")
+            return (torch.stack([to_tensor(np.array(pil0)) for pil0 in images]),)
+        sy0, sy1 = ys0.min(), ys0.max()
+        sx0, sx1 = xs0.min(), xs0.max()
+        sk_w, sk_h = sx1 - sx0, sy1 - sy0
+        scale_y = ref_h / sk_h
+        scale_x = ref_w / sk_w if scale_width else scale_y
+        if debug: print(f"Global scales from first image: scale_x={scale_x:.3f}, scale_y={scale_y:.3f}")
+
+        outputs = []
+        # Process each image individually
+        for idx, img in enumerate(images):
+            pil = to_pil(img)
+            arr = np.array(pil)
+            mask_i = np.any(arr[..., :3] > 0, axis=-1)
+            ys_i, xs_i = np.nonzero(mask_i)
+            if ys_i.size == 0:
+                if debug: print(f"Image {idx}: no non-black region, returning original.")
+                outputs.append(np.array(pil).astype(np.float32)/255.0)
+                continue
+            sy0_i, sy1_i = ys_i.min(), ys_i.max()
+            sx0_i, sx1_i = xs_i.min(), xs_i.max()
+            region_w, region_h = sx1_i - sx0_i, sy1_i - sy0_i
+
+            # New size
+            new_w = int(region_w * scale_x)
+            new_h = int(region_h * scale_y)
+            # Center of original region
+            cx = (sx0_i + sx1_i) / 2.0
+            cy = (sy0_i + sy1_i) / 2.0
+            # Compute top-left offset
+            offset_x = int(cx - new_w/2)
+            offset_y = int(y1_m - new_h)
+            if debug: print(f"Image {idx}: region ({sx0_i},{sy0_i})→({sx1_i},{sy1_i}), new size={new_w}×{new_h}, offset=({offset_x},{offset_y})")
+
+            # Crop, resize, paste
+            region = pil.crop((sx0_i, sy0_i, sx1_i, sy1_i))
+            region_scaled = region.resize((new_w, new_h), resample=Image.BICUBIC)
+            # canvas = pil.copy()
+            W, H = pil.size
+            canvas = Image.new(pil.mode, (W, H), 0)
+            # Use mask channel if available
+            mask_rgba = region_scaled.split()[-1] if region_scaled.mode in ('RGBA','LA') else None
+            canvas.paste(region_scaled, (offset_x, offset_y), mask=mask_rgba)
+
+            if debug:
+                draw = ImageDraw.Draw(canvas)
+                draw.rectangle([x0_m, y0_m, x1_m, y1_m], outline='red')
+                draw.rectangle([sx0_i, sy0_i, sx1_i, sy1_i], outline='blue')
+
+            out_arr = np.array(canvas).astype(np.float32)/255.0
+            outputs.append(out_arr)
+
+        batch = np.stack(outputs, axis=0)
+        if debug: print(f"Final batch shape: {batch.shape}")
+        return (torch.from_numpy(batch),)
 
 class ScaleHeightAroundBottomMidNode:
     @classmethod

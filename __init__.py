@@ -2,7 +2,7 @@ import os,sys
 now_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(now_dir)
 WEB_DIRECTORY = "./web"
-from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode, ScaleImagesToMaskNode, ScaleHeightAroundBottomMidNode
+from .nodes import ScaleSkeletonsNode, CuteSkeletonNode, CatPoseRetargetNode, ScaleImagesToMaskNode, ScaleHeightAroundBottomMidNode, ScaleImagesToRefImageNode
 from .render_poses import RenderMultiplePeoplePoses, RenderMultipleAnimalPoses, DrawAnimalKeypoints, PoseJSONWrapper, RenderMultiplePeoplePosesForAnimal
 from .unianimate_poses import MyWanVideoUniAnimateDWPoseDetector
 
@@ -20,6 +20,7 @@ NODE_CLASS_MAPPINGS = {
     "DrawAnimalKeypoints": DrawAnimalKeypoints,
     "PoseJSONWrapper": PoseJSONWrapper,
     "ScaleImagesToMaskNode": ScaleImagesToMaskNode,
+    "ScaleImagesToRefImageNode": ScaleImagesToRefImageNode,
     "ScaleHeightAroundBottomMidNode": ScaleHeightAroundBottomMidNode,
     "RenderMultiplePeoplePosesForAnimal": RenderMultiplePeoplePosesForAnimal,
     "MyWanVideoUniAnimateDWPoseDetector": MyWanVideoUniAnimateDWPoseDetector,
@@ -35,6 +36,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "DrawAnimalKeypoints": "Draw animal pose keypoints",
     "PoseJSONWrapper": "Pose Json data to Keypoints",
     "ScaleImagesToMaskNode": "Scale Images to Mask Bbox",
+    "ScaleImagesToRefImageNode": "Scale Images to Reference Image Bbox",
     "ScaleHeightAroundBottomMidNode": "Scale Height Around Bottom Mid Node",
     "RenderMultiplePeoplePosesForAnimal": "Render Multiple People Poses for Animal",
     "MyWanVideoUniAnimateDWPoseDetector": "My Custom WanVideo UniAnimate DW Pose Detector",
